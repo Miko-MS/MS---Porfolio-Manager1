@@ -95,7 +95,7 @@ print("--- Pierwsze 5 wierszy tabeli: ---")
 print(df_vix_2024.head())
 
 
-# Definicja portfela (poprawiony ticker AAPL)
+# 1. Definicja parametrów początkowych
 portfolio = {
     'AAPL':  'Apple',
     'MSFT':  'Microsoft',
@@ -109,27 +109,80 @@ portfolio = {
     'NFLX':  'Netflix'
 }
 
-# 1. Parametry początkowe
-kapital_startowy = 10000  # USD
-liczba_spolek = len(portfolio)
+kapital_startowy_calkowity = 10000.0  # USD
+waga_poczatkowa_proc = 100.0 / len(portfolio)
+kapital_na_spolke = kapital_startowy_calkowity / len(portfolio)
 
-# 2. Obliczenia alokacji (dynamicznie, na wypadek gdybyś kiedyś usunął/dodał spółkę)
-waga_pojedyncza = 1.0 / liczba_spolek          # Wynik: 0.10 (czyli 10%)
-kapital_na_spolke = kapital_startowy * waga_pojedyncza # Wynik: 1000 USD
+# 2. Pobranie danych z bazy SQL i przekształcenie w Pivot Table
+with sqlite3.connect('nasdaq_top10.db') as conn:
+    df_baza = pd.read_sql('SELECT Date, Ticker, Close FROM prices', conn)
 
-# 3. Zbudowanie tabeli (DataFrame) podsumowującej start
-# Używamy orient='index', aby klucze słownika (tickery) stały się indeksami (nazwami wierszy)
-df_start = pd.DataFrame.from_dict(portfolio, orient='index', columns=['Nazwa_Spolki'])
+df_baza['Date'] = pd.to_datetime(df_baza['Date'])
+df_pivot = df_baza.pivot(index='Date', columns='Ticker', values='Close')
 
-# 4. Dodanie kolumn z obliczeniami
-df_start['Waga_Procentowa'] = waga_pojedyncza * 100
-df_start['Kapital_Startowy_USD'] = kapital_na_spolke
+# 3. ZNAJDOWANIE CEN I DAT (Odporność na brakujące dane!)
+# .iloc[0] wyciąga pierwszą dostępną cenę
+ceny_poczatkowe = df_pivot.apply(lambda col: col.dropna().iloc[0])
+ceny_koncowe = df_pivot.apply(lambda col: col.dropna().iloc[-1])
 
-# Wyświetlenie podsumowania
-print(f"--- PARAMETRY PORTFELA ---")
-print(f"Kapitał całkowity: {kapital_startowy:,.2f} USD")
-print(f"Liczba walorów:    {liczba_spolek}")
-print(f"Alokacja na walor: {kapital_na_spolke:,.2f} USD ({waga_pojedyncza*100}%)\n")
+# .index[0] wyciąga datę przypisaną do tej pierwszej dostępnej ceny
+daty_poczatkowe = df_pivot.apply(lambda col: col.dropna().index[0])
 
-print("--- STAN PORTFELA (DZIEŃ 0) ---")
-print(df_start)
+# 4. Obliczenia dla poszczególnych spółek
+wyniki = []
+
+for ticker, nazwa in portfolio.items():
+    cena_pocz = ceny_poczatkowe[ticker]
+    cena_konc = ceny_koncowe[ticker]
+    data_dodania = daty_poczatkowe[ticker]  # <-- Wyciągnięcie daty
+    
+    stopa_zwrotu = ((cena_konc / cena_pocz) - 1) * 100
+    kapital_koncowy = kapital_na_spolke * (1 + (stopa_zwrotu / 100))
+    
+    wyniki.append({
+        'Ticker': ticker,
+        'Nazwa_Akcji': nazwa,
+        'Data_Dodania': data_dodania,       # <-- Dodanie do tabeli
+        'Waga_Pocz_%': waga_poczatkowa_proc,
+        'Kapital_Startowy_USD': kapital_na_spolke,
+        'Cena_Pocz_USD': cena_pocz,
+        'Cena_Konc_USD': cena_konc,
+        'Stopa_Zwrotu_%': stopa_zwrotu,
+        'Kapital_Koncowy_USD': kapital_koncowy
+    })
+
+df_wyniki = pd.DataFrame(wyniki)
+
+# 5. Podsumowanie całego portfela
+portfel_start = df_wyniki['Kapital_Startowy_USD'].sum()
+portfel_koniec = df_wyniki['Kapital_Koncowy_USD'].sum()
+portfel_zwrot = ((portfel_koniec / portfel_start) - 1) * 100
+
+# ==========================================
+# 6. ESTETYKA WYSWIETLANIA (Formatowanie)
+# ==========================================
+df_wyswietlanie = df_wyniki.copy()
+
+# Dodajemy formatowanie daty na standardowy i czytelny rrrr-mm-dd
+format_daty = lambda x: x.strftime('%Y-%m-%d')
+format_waluta = lambda x: f"${x:,.2f}"
+format_procent = lambda x: f"{x:,.2f}%"
+
+df_wyswietlanie['Data_Dodania'] = df_wyswietlanie['Data_Dodania'].apply(format_daty)
+df_wyswietlanie['Waga_Pocz_%'] = df_wyswietlanie['Waga_Pocz_%'].apply(format_procent)
+df_wyswietlanie['Kapital_Startowy_USD'] = df_wyswietlanie['Kapital_Startowy_USD'].apply(format_waluta)
+df_wyswietlanie['Cena_Pocz_USD'] = df_wyswietlanie['Cena_Pocz_USD'].apply(format_waluta)
+df_wyswietlanie['Cena_Konc_USD'] = df_wyswietlanie['Cena_Konc_USD'].apply(format_waluta)
+df_wyswietlanie['Stopa_Zwrotu_%'] = df_wyswietlanie['Stopa_Zwrotu_%'].apply(format_procent)
+df_wyswietlanie['Kapital_Koncowy_USD'] = df_wyswietlanie['Kapital_Koncowy_USD'].apply(format_waluta)
+
+pd.set_option('display.max_columns', None)
+pd.set_option('display.width', 1000)
+
+print("--- WYNIKI INDYWIDUALNE SPÓŁEK ---")
+print(df_wyswietlanie.to_string(index=False))
+
+print("\n--- PODSUMOWANIE PORTFELA ---")
+print(f"Kapitał Początkowy:     ${portfel_start:,.2f}")
+print(f"Kapitał Końcowy:        ${portfel_koniec:,.2f}")
+print(f"Całkowita Stopa Zwrotu: {portfel_zwrot:,.2f}%\n")
