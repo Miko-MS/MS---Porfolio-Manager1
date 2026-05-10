@@ -1,11 +1,10 @@
 # MS---Porfolio-Manager1
-Manager for Multiple portfolios
 import yfinance as yf
-import numpy as np
 import pandas as pd
-import sqlite3 as sql
-# 10 spolek NASDAQ 100 o najwiekszej kapitalizacji (stan ~2025)
-nasdaq_top10 = {
+import sqlite3
+
+# 10 spolek NASDAQ 100 + VIX
+nasdaq_top10V2 = {
     '^VIX':  'CBOE Volatility Index',
     'AAPL':  'Apple',
     'MSFT':  'Microsoft',
@@ -19,69 +18,81 @@ nasdaq_top10 = {
     'NFLX':  'Netflix'
 }
 
-tickers = list(nasdaq_top10.keys())
-print('Tickery do pobrania:', tickers)
-
-# Pobieramy dzienne ceny zamkniecia za okres 2020-2025
-data_od = '2004-01-01'
+data_od = '2012-05-18'
 data_do = '2025-12-31'
 
-df_all = yf.download(
-    tickers=tickers,
-    start=data_od,
-    end=data_do,
-    group_by='ticker',  # dane pogrupowane po tickerze
-    auto_adjust=True     # ceny skorygowane o splity / dywidendy
-)
-
-print('Ksztalt danych:', df_all.shape)
-df_all.head()
-
-
 frames = []
-for ticker in tickers:
-    tmp = df_all[ticker].copy()
-    tmp['Ticker'] = ticker
-    tmp['Company'] = nasdaq_top10[ticker]
-    tmp.index.name = 'Date'
-    tmp = tmp.reset_index()
-    frames.append(tmp)
 
-df = pd.concat(frames, ignore_index=True)
+print("Rozpoczynam pobieranie danych...")
 
-# Usuwamy wiersze bez ceny zamkniecia
-df = df.dropna(subset=['Close'])
+# 1. POBIERANIE W PĘTLI Z ZABEZPIECZENIAMI
+for ticker, company_name in nasdaq_top10V2.items():
+    print(f"Pobieranie: {ticker} ({company_name})...", end=" ")
+    
+    try:
+        # Pobieramy dane tylko dla jednego tickera naraz (progress=False ukrywa pasek ładowania yf)
+        tmp = yf.download(ticker, start=data_od, end=data_do, auto_adjust=True, progress=False)
+        
+        # 2. WERYFIKACJA CZY DANE ISTNIEJĄ
+        if tmp.empty:
+            print("❌ BŁĄD: Brak danych dla tego tickera w wybranym okresie.")
+            continue # Przejdź do następnej spółki
+            
+        # W nowszych wersjach yfinance, nawet pojedynczy ticker może zwrócić MultiIndex.
+        # Ta linijka upewnia się, że kolumny są płaskie (Open, High, Low, Close, Volume)
+        if isinstance(tmp.columns, pd.MultiIndex):
+            tmp.columns = tmp.columns.droplevel(1)
+            
+        # Dodajemy kolumny identyfikacyjne
+        tmp['Ticker'] = ticker
+        tmp['Company'] = company_name
+        tmp.index.name = 'Date'
+        tmp = tmp.reset_index()
+        
+        # 3. CZYSZCZENIE DANYCH
+        # Usuwamy wiersze bez ceny zamknięcia (np. błędy API lub dni wolne)
+        tmp = tmp.dropna(subset=['Close'])
+        
+        frames.append(tmp)
+        print(f"✅ Sukces (Wierszy: {len(tmp)})")
+        
+    except Exception as e:
+        # Jeśli API rzuci błędem (np. brak internetu, odrzucenie zapytania), skrypt nie umrze!
+        print(f"❌ BŁĄD KRYTYCZNY: {e}")
 
-print(f'Laczna liczba wierszy: {len(df)}')
-print(f'Unikalne tickery:      {df["Ticker"].nunique()}')
-df.head()
-
-# Tworzymy (lub otwieramy) plik bazy danych
-conn = sql.connect('nasdaq_top10.db')
-
-# Zapisujemy DataFrame do tabeli SQL
-df.to_sql('prices', conn, if_exists='replace', index=False)
-
-print('Tabela "prices" zapisana w pliku nasdaq_top10.db')
-
-# Wczytanie calej tabeli
-df_sql = pd.read_sql('SELECT * FROM prices', conn)
-print(f'Wierszy: {len(df_sql)}, Kolumn: {len(df_sql.columns)}')
-df_sql.head()
-
-# Filtrowanie SQL – tylko Apple, rok 2024
+# 4. ŁĄCZENIE I ZAPIS DO BAZY DANYCH
+if not frames:
+    print("\nSKRYPT ZATRZYMANY: Nie udało się pobrać danych dla żadnej spółki.")
+else:
+    # Łączymy wszystkie udane pobrania w jedną tabelę
+    df = pd.concat(frames, ignore_index=True)
+    
+    print('\n--- PODSUMOWANIE ---')
+    print(f'Laczna liczba wierszy: {len(df)}')
+    print(f'Unikalne tickery:      {df["Ticker"].nunique()}')
+    
+    # Używamy bloku "with", który sam bezpiecznie zamyka połączenie z bazą
+    with sqlite3.connect('nasdaq_top10.db') as conn:
+        df.to_sql('prices', conn, if_exists='replace', index=False)
+        print('Tabela "prices" bezpiecznie zapisana w pliku nasdaq_top10.db\n')
+        
+        # TEST: Wczytanie całej tabeli
+        df_sql = pd.read_sql('SELECT * FROM prices', conn)
+        print(f'Wczytano z bazy wierszy: {len(df_sql)}, Kolumn: {len(df_sql.columns)}')
+        
+# TEST: Filtrowanie SQL – tylko ^VIX, rok 2024
 query = """
 SELECT Date, Close
 FROM prices
 WHERE Ticker = '^VIX'
-  AND Date >= '2024-01-01'
-  AND Date <  '2025-01-01'
+AND Date >= '2024-01-01'
+AND Date <  '2025-01-01'
 ORDER BY Date
 """
-
 df_vix_2024 = pd.read_sql(query, conn)
-print(f'Wierszy ^VIX 2024: {len(df_vix_2024)}')
-df_vix_2024.head()
+print(f'Wczytano z bazy wierszy ^VIX 2024: {len(df_vix_2024)}')
+print("--- Pierwsze 5 wierszy tabeli: ---")
+print(df_vix_2024.head())
 
 
 # Definicja portfela (poprawiony ticker AAPL)
