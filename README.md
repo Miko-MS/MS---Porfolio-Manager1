@@ -230,7 +230,7 @@ if __name__ == '__main__':
 
 
 
-    # ============================================================
+# ============================================================
 #  MODUŁ III – Roczne stopy zwrotu portfela + CAGR 
 # ============================================================
 
@@ -456,9 +456,12 @@ print("TABELA 2 – Udział akcji w portfelu na koniec roku [%]")
 print("=" * 60)
 print(df_wagi_display.to_string())
 
-#  
-# Wizualizacja - wykres wartości portfela w czasie 
-# 
+
+# ============================================================
+#  MODUŁ V – Wizualizacja - wykres wartości portfela w czasie 
+# ============================================================
+
+
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import matplotlib.dates as mdates
