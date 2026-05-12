@@ -611,3 +611,351 @@ if __name__ == '__main__':
     rysuj_portfel(df_portfel, PORTFOLIO, KAPITAL_USD)
 
  
+# ============================================================
+#  MODUŁ VI – Rebalancing portfela (roczny)
+# ============================================================
+
+def oblicz_portfel_rebalancing(pivot: pd.DataFrame, portfolio: dict, kapital: float) -> pd.DataFrame:
+    """
+    Symuluje portfel z corocznym rebalancingiem.
+    Na koniec każdego roku (ostatni dzień sesyjny) kapitał jest ponownie 
+    dzielony równo (po 10%) pomiędzy wszystkie spółki.
+    """
+    # 1. Pobieramy wspólny wycinek dat dla wszystkich spółek
+    pivot_kompletny = pivot[list(portfolio.keys())].dropna()
+    if pivot_kompletny.empty:
+        raise ValueError("Brak wspólnych dat notowań dla wszystkich spółek portfela.")
+
+    # 2. DEFINIOWANIE DAT REBALANCINGU
+    # Grupujemy po roku i wyciągamy ostatni dzień (Date) z każdego roku
+    dni_rebalancingu = pivot_kompletny.groupby(pivot_kompletny.index.year).apply(lambda x: x.index[-1]).values
+    zbior_dat_rebalancingu = set(dni_rebalancingu) # Set dla szybszego wyszukiwania (O(1))
+
+    waga_docelowa = 1.0 / len(portfolio)
+    akcje = {} # Przechowuje "liczbę posiadanych akcji" dla każdego tickera
+    historia = []
+
+    # 3. Inicjalizacja portfela (Start: np. 2012-05-18)
+    data_start = pivot_kompletny.index[0]
+    ceny_start = pivot_kompletny.loc[data_start]
+    
+    kapital_poczatkowy_na_spolke = kapital * waga_docelowa
+    for ticker in portfolio:
+        # Kupujemy odpowiednią liczbę akcji (dopuszczamy ułamki dla dokładności matematycznej)
+        akcje[ticker] = kapital_poczatkowy_na_spolke / ceny_start[ticker]
+
+    # 4. Pętla po każdym dniu sesyjnym
+    for data, ceny in pivot_kompletny.iterrows():
+        # Oblicz bieżącą wartość portfela przed ewentualnym rebalancingiem
+        wartosc_pozycji = {ticker: akcje[ticker] * ceny[ticker] for ticker in portfolio}
+        calkowita_wartosc_portfela = sum(wartosc_pozycji.values())
+        
+        historia.append({
+            'Date': data,
+            'Wartość_Portfela_Rebal_USD': calkowita_wartosc_portfela
+        })
+
+        # ============================================================
+        # TUTA JEST WARUNEK DOKONYWANIA REBALANCINGU
+        # Jeśli bieżąca data to ostatni dzień sesyjny w danym roku 
+        # (i nie jest to ostatni dzień całego badania, bo wtedy rebalancing nie ma sensu)
+        # ============================================================
+        if data in zbior_dat_rebalancingu and data != pivot_kompletny.index[-1]:
+            
+            # Nowy kapitał na spółkę = 10% bieżącej wartości całego portfela
+            nowy_kapital_na_spolke = calkowita_wartosc_portfela * waga_docelowa
+            
+            # Realizujemy rebalancing - przeliczamy na nowo posiadaną liczbę akcji
+            for ticker in portfolio:
+                akcje[ticker] = nowy_kapital_na_spolke / ceny[ticker]
+
+    df_historia = pd.DataFrame(historia).set_index('Date')
+    
+    # Obliczenie stopy zwrotu
+    df_historia['Stopa_Zwrotu_Rebal_%'] = (df_historia['Wartość_Portfela_Rebal_USD'] / kapital - 1) * 100
+    
+    return df_historia
+
+
+def tabela_porownawcza_rebalancing(df_rebal: pd.DataFrame, df_bh: pd.DataFrame, kapital: float) -> None:
+    """Tworzy i drukuje tabelę podsumowującą stopę zwrotu za cały okres."""
+    
+    wartosc_koncowa_rebal = df_rebal['Wartość_Portfela_Rebal_USD'].iloc[-1]
+    zwrot_rebal = df_rebal['Stopa_Zwrotu_Rebal_%'].iloc[-1]
+    
+    # Bierzemy dane końcowe z modułu Buy & Hold (Moduł V)[cite: 1]
+    wartosc_koncowa_bh = df_bh['Portfel_USD'].iloc[-1]
+    zwrot_bh = df_bh['Portfel_pct'].iloc[-1]
+    
+    wyniki = {
+        'Strategia': ['Kup i Trzymaj (B&H)', 'Rebalancing Roczny (10%)'],
+        'Kapitał Początkowy [USD]': [kapital, kapital],
+        'Kapitał Końcowy [USD]': [wartosc_koncowa_bh, wartosc_koncowa_rebal],
+        'Całkowita Stopa Zwrotu [%]': [zwrot_bh, zwrot_rebal]
+    }
+    
+    df_wyniki = pd.DataFrame(wyniki)
+    
+    # Formatowanie wyświetlania
+    formaty = {
+        'Kapitał Początkowy [USD]': '${:,.2f}'.format,
+        'Kapitał Końcowy [USD]': '${:,.2f}'.format,
+        'Całkowita Stopa Zwrotu [%]': '{:,.2f}%'.format
+    }
+    for kolumna, funkcja in formaty.items():
+        df_wyniki[kolumna] = df_wyniki[kolumna].apply(funkcja)
+        
+    print("=" * 70)
+    print("MODUŁ VI – Porównanie strategii w całym okresie inwestycji")
+    print("=" * 70)
+    print(df_wyniki.to_string(index=False))
+
+# ============================================================
+# Wywołanie Modułu VI (dodaj pod wywołaniem Modułu V)
+# ============================================================
+print("\n" + "=" * 50)
+print("MODUŁ VI – Symulacja rebalancingu")
+print("=" * 50)
+
+# 1. Obliczenie ścieżki portfela z rebalancingiem
+df_rebal = oblicz_portfel_rebalancing(pivot, PORTFOLIO, KAPITAL_USD)
+
+# 2. Wyświetlenie tabeli porównawczej (wykorzystuje df_portfel z Modułu V)
+tabela_porownawcza_rebalancing(df_rebal, df_portfel, KAPITAL_USD)
+
+
+# ============================================================
+#  MODUŁ VII – Rebalancing portfela (zapalnik: VIX)
+# ============================================================
+
+def oblicz_portfel_vix(pivot: pd.DataFrame, portfolio: dict, kapital: float, prog_vix: float = 30.0, cooldown_dni: int = 20) -> pd.DataFrame:
+    """
+    Symuluje portfel z rebalancingiem aktywowanym wskaźnikiem VIX.
+    Gdy VIX przekroczy zadany próg, kapitał jest ponownie dzielony równo (po 10%).
+    Wprowadzono mechanizm 'cooldown_dni', aby zapobiec codziennemu rebalancingowi
+    w okresach przedłużającej się rynkowej paniki.
+    """
+    
+    # 1. Sprawdzenie, czy VIX został pobrany do pivotu
+    if '^VIX' not in pivot.columns:
+        raise ValueError("Brak tickera '^VIX' w danych! Upewnij się, że dodałeś VIX do zapytania SQL wczytującego pivot.")
+
+    # 2. Wyodrębnienie danych (bierzemy pod uwagę tylko wspólne daty dla akcji)
+    pivot_akcje = pivot[list(portfolio.keys())].dropna()
+    vix_series = pivot['^VIX'].ffill() # Ffill wypełnia luki w notowaniach indeksu
+    
+    waga_docelowa = 1.0 / len(portfolio)
+    akcje = {} 
+    historia = []
+
+    # 3. Inicjalizacja portfela
+    data_start = pivot_akcje.index[0]
+    ceny_start = pivot_akcje.loc[data_start]
+    
+    kapital_poczatkowy_na_spolke = kapital * waga_docelowa
+    for ticker in portfolio:
+        akcje[ticker] = kapital_poczatkowy_na_spolke / ceny_start[ticker]
+
+    ostatni_rebalancing = data_start # Śledzimy datę ostatniego wyrównania
+
+    # 4. Pętla sesja po sesji
+    for data, ceny in pivot_akcje.iterrows():
+        wartosc_pozycji = {ticker: akcje[ticker] * ceny[ticker] for ticker in portfolio}
+        calkowita_wartosc_portfela = sum(wartosc_pozycji.values())
+        
+        historia.append({
+            'Date': data,
+            'Wartość_Portfela_VIX_USD': calkowita_wartosc_portfela,
+            'Poziom_VIX': vix_series[data]
+        })
+
+        # ============================================================
+        # TUTA JEST NOWY WARUNEK REBALANCINGU:
+        # 1. VIX musi być większy lub równy założonemu progowi
+        # 2. Od ostatniego rebalancingu musiało minąć więcej dni niż wynosi 'cooldown'
+        # 3. Nie rebalansujemy w ostatnim dniu trwania badania
+        # ============================================================
+        # 2. Moduł VII: Wywołanie portfela opartego na VIX
+        
+        dni_od_rebalancingu = (data - ostatni_rebalancing).days
+        biezacy_vix = vix_series.get(data, 0)
+        
+        if (biezacy_vix >= prog_vix) and (dni_od_rebalancingu >= cooldown_dni) and (data != pivot_akcje.index[-1]):
+            
+            nowy_kapital_na_spolke = calkowita_wartosc_portfela * waga_docelowa
+            
+            for ticker in portfolio:
+                akcje[ticker] = nowy_kapital_na_spolke / ceny[ticker]
+                
+            ostatni_rebalancing = data # Zresetuj licznik cooldownu
+
+    df_historia = pd.DataFrame(historia).set_index('Date')
+    df_historia['Stopa_Zwrotu_VIX_%'] = (df_historia['Wartość_Portfela_VIX_USD'] / kapital - 1) * 100
+    
+    return df_historia
+
+def tabela_porownawcza_vix_vs_roczny(df_vix: pd.DataFrame, df_roczny: pd.DataFrame, kapital: float, prog: float) -> None:
+    """Tworzy tabelę wyników porównującą Rebalancing VIX z Rebalancingiem Rocznym."""
+    wartosc_koncowa_vix = df_vix['Wartość_Portfela_VIX_USD'].iloc[-1]
+    zwrot_vix = df_vix['Stopa_Zwrotu_VIX_%'].iloc[-1]
+    
+    # ZMIANA: Pobieramy dane z kolumn wygenerowanych przez Moduł VI
+    wartosc_koncowa_roczny = df_roczny['Wartość_Portfela_Rebal_USD'].iloc[-1]
+    zwrot_roczny = df_roczny['Stopa_Zwrotu_Rebal_%'].iloc[-1]
+    
+    wyniki = {
+        'Strategia': ['Rebalancing Roczny (10%)', f'Rebalancing VIX (>{prog})'],
+        'Kapitał Końcowy [USD]': [wartosc_koncowa_roczny, wartosc_koncowa_vix],
+        'Całkowita Stopa Zwrotu [%]': [zwrot_roczny, zwrot_vix]
+    }
+    
+    df_wyniki = pd.DataFrame(wyniki)
+    for kolumna in ['Kapitał Końcowy [USD]']:
+        df_wyniki[kolumna] = df_wyniki[kolumna].apply('${:,.2f}'.format)
+    df_wyniki['Całkowita Stopa Zwrotu [%]'] = df_wyniki['Całkowita Stopa Zwrotu [%]'].apply('{:,.2f}%'.format)
+        
+    print("\n" + "=" * 65)
+    print(f"MODUŁ VII – Porównanie: Rebalancing Roczny vs VIX > {prog}")
+    print("=" * 65)
+    print(df_wyniki.to_string(index=False))
+    
+    # ============================================================
+#  PUNKT WEJŚCIA (WYWOŁANIE WSZYSTKICH MODUŁÓW)
+# ============================================================
+
+if __name__ == '__main__':
+   
+    # --- MODUŁ I --- (Zakładam, że baza jest już pobrana, więc można to zakomentować, 
+    # aby nie pobierać danych z API za każdym uruchomieniem skryptu)
+    # df_raw = pobierz_dane(WSZYSTKIE_TICKERY, DATA_OD, DATA_DO)
+    # zapisz_do_bazy(df_raw, DB_PATH, DB_TABLE)
+   
+    # --- MODUŁ II ---
+    # pivot = wczytaj_pivot(DB_PATH, DB_TABLE, list(PORTFOLIO.keys()))
+    # df_wyniki = oblicz_portfel(pivot, PORTFOLIO, KAPITAL_USD)
+    # drukuj_wyniki(df_wyniki)
+
+    # ... (tutaj znajdują się wywołania Twoich modułów III, IV oraz VI jeśli je masz) ...
+
+    # ============================================================
+    #  MODUŁ V oraz VII (Wizualizacja B&H i Rebalancing VIX)
+    # ============================================================
+    print("\n" + "=" * 50)
+    print("MODUŁ V i VII – Przygotowanie danych i symulacja")
+    print("=" * 50)
+
+    # Przygotowanie pełnej listy tickerów do pivotu (Akcje + VIX)
+    tickery_do_analizy = list(PORTFOLIO.keys()) + ['^VIX']
+    # Używamy funkcji wczytaj_kursy z Modułu V
+    pivot_pelny = wczytaj_kursy(DB_PATH, DB_TABLE, tickery_do_analizy)
+
+    # --- 1. Moduł V: Klasyczny portfel Buy & Hold (tylko akcje) ---
+    print("\nObliczanie klasycznego portfela B&H (Moduł V)...")
+    df_portfel = oblicz_wartosc_portfela(pivot_pelny, PORTFOLIO, KAPITAL_USD)
+    # Rysowanie wykresu tymczasowo wyłączone dla szybkości testów tabeli (odkomentuj, gdy potrzebne)
+    # rysuj_portfel(df_portfel, PORTFOLIO, KAPITAL_USD) 
+
+    # --- 2. Moduł VII: Wywołanie portfela opartego na VIX ---
+    print("Obliczanie portfela z rebalancingiem VIX (Moduł VII)...")
+    PROG_VIX_TEST = 40.0
+    COOLDOWN_DNI = 20
+    
+    df_vix_rebal = oblicz_portfel_vix(
+        pivot_pelny, 
+        PORTFOLIO, 
+        KAPITAL_USD, 
+        prog_vix=PROG_VIX_TEST, 
+        cooldown_dni=COOLDOWN_DNI
+    )
+    
+    # Wyświetlenie ostatecznego porównania
+    tabela_porownawcza_vix(df_vix_rebal, df_portfel, KAPITAL_USD, PROG_VIX_TEST)
+
+    # ============================================================
+#  MODUŁ VIII – Wizualizacja porównawcza (B&H vs VIX Rebalancing)
+# ============================================================
+
+def rysuj_porownanie_portfeli_vix_vs_roczny(df_roczny: pd.DataFrame, df_vix: pd.DataFrame, prog_vix: float) -> None:
+    """
+    Rysuje wykres porównawczy: Rebalancing Roczny vs Rebalancing VIX.
+    """
+    fig, axes = plt.subplots(2, 1, figsize=(14, 10), 
+                             gridspec_kw={'height_ratios': [2, 1]}, 
+                             sharex=True)
+    fig.suptitle('Porównanie strategii: Rebalancing Roczny vs Rebalancing VIX', 
+                 fontsize=14, fontweight='bold', y=0.98)
+
+    ax1, ax2 = axes
+
+    # --- Górny panel: Wartość kapitału ---
+    # ZMIANA: df_roczny i kolumna Wartość_Portfela_Rebal_USD
+    ax1.plot(df_roczny.index, df_roczny['Wartość_Portfela_Rebal_USD'], 
+             color='#2196F3', linewidth=2, label='Rebalancing Roczny (10%)')
+    ax1.plot(df_vix.index, df_vix['Wartość_Portfela_VIX_USD'], 
+             color='#FF9800', linewidth=2, label=f'Rebalancing VIX (>= {prog_vix})')
+
+    ax1.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f'${x:,.0f}'))
+    ax1.set_ylabel('Wartość portfela [USD]', fontsize=11)
+    ax1.legend(loc='upper left', fontsize=10, framealpha=0.85)
+    ax1.grid(axis='y', alpha=0.3)
+    ax1.grid(axis='x', alpha=0.2)
+
+    # --- Dolny panel: Obsunięcia kapitału (Drawdown) ---
+    # ZMIANA: Obliczanie drawdownu z kolumn rocznego
+    dd_roczny = (df_roczny['Wartość_Portfela_Rebal_USD'] / df_roczny['Wartość_Portfela_Rebal_USD'].cummax() - 1) * 100
+    dd_vix = (df_vix['Wartość_Portfela_VIX_USD'] / df_vix['Wartość_Portfela_VIX_USD'].cummax() - 1) * 100
+
+    ax2.plot(dd_roczny.index, dd_roczny, color='#2196F3', linewidth=1.2, alpha=0.8, label='Drawdown Roczny')
+    ax2.plot(dd_vix.index, dd_vix, color='#FF9800', linewidth=1.2, alpha=0.8, label='Drawdown VIX')
+    
+    ax2.fill_between(dd_roczny.index, dd_roczny, 0, color='#2196F3', alpha=0.1)
+    ax2.fill_between(dd_vix.index, dd_vix, 0, color='#FF9800', alpha=0.15)
+
+    ax2.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f'{x:.0f}%'))
+    ax2.set_ylabel('Obsunięcie kapitału [%]', fontsize=11)
+    ax2.legend(loc='lower left', fontsize=10, framealpha=0.85)
+    ax2.grid(axis='y', alpha=0.3)
+    ax2.grid(axis='x', alpha=0.2)
+
+    ax2.xaxis.set_major_locator(mdates.YearLocator())
+    ax2.xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
+    plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45, ha='right')
+    ax2.set_xlabel('Data', fontsize=11)
+
+    plt.tight_layout()
+    plt.savefig('porownanie_rebalancingow.png', dpi=150, bbox_inches='tight')
+    print("✅  Wykres porównawczy zapisany jako 'porownanie_rebalancingow.png'")
+    plt.show()
+
+    # ============================================================
+#  PUNKT WEJŚCIA
+# ============================================================
+
+if __name__ == '__main__':
+    
+    print("\n" + "=" * 50)
+    print("URUCHAMIANIE GŁÓWNEGO PROCESU: Roczny vs VIX")
+    print("=" * 50)
+
+    # 1. Wczytanie danych z bazy dla portfela i VIX
+    print("Wczytywanie danych z bazy...")
+    tickery_do_analizy = list(PORTFOLIO.keys()) + ['^VIX']
+    pivot_pelny = wczytaj_kursy(DB_PATH, DB_TABLE, tickery_do_analizy)
+
+    # 2. Obliczenia dla Rebalancingu Rocznego (Moduł VI)
+    # Wywołujemy funkcję z modułu VI, żeby uzyskać df_rebal_roczny
+    print("Obliczanie portfela z rebalancingiem rocznym...")
+    df_rebal_roczny = oblicz_portfel_rebalancing(pivot_pelny, PORTFOLIO, KAPITAL_USD)
+
+    # 3. Obliczenia dla rebalancingu VIX (Moduł VII)
+    print("Obliczanie portfela z rebalancingiem VIX...")
+    PROG_VIX_TEST = 30.0
+    COOLDOWN_DNI = 20
+    df_vix_rebal = oblicz_portfel_vix(pivot_pelny, PORTFOLIO, KAPITAL_USD, prog_vix=PROG_VIX_TEST, cooldown_dni=COOLDOWN_DNI)
+    
+    # 4. Tabela porównawcza obu strategii
+    tabela_porownawcza_vix_vs_roczny(df_vix_rebal, df_rebal_roczny, KAPITAL_USD, PROG_VIX_TEST)
+
+    # 5. Ostateczna wizualizacja (Moduł VIII)
+    print("Generowanie wykresu porównawczego...")
+    rysuj_porownanie_portfeli_vix_vs_roczny(df_rebal_roczny, df_vix_rebal, PROG_VIX_TEST)
