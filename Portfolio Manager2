@@ -1,3 +1,8 @@
+import sys
+
+!{sys.executable} -m pip install yfinance matplotlib pandas
+import os
+import sqlite3
 import yfinance as yf
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -9,16 +14,36 @@ PORTFOLIO = ['AAPL', 'MSFT', 'NVDA', 'AMZN', 'META', 'GOOGL', 'AVGO', 'TSLA', 'C
 VIX_TICKER = '^VIX'
 DATA_OD, DATA_DO = '2012-05-18', '2025-12-31'
 KAPITAL = 10000.0
-PROG_VIX, COOLDOWN = 80.0, 20
+PROG_VIX, COOLDOWN = 60.0, 20
+
+DB_PATH = 'nasdaq_top10.db'
+DB_TABLE = 'prices_pivot'
 
 # ==========================================
-# 2. POBIERANIE DANYCH
+# 2. POBIERANIE I OBSŁUGA BAZY DANYCH
 # ==========================================
-def pobierz_dane():
-    print("Pobieranie danych...")
-    # Pobiera wszystko naraz. W nowym yfinance wynikiem są zagnieżdżone kolumny, wybieramy 'Close'
-    df = yf.download(PORTFOLIO + [VIX_TICKER], start=DATA_OD, end=DATA_DO)['Close']
-    return df.ffill().dropna() # Uzupełnienie luk i wyrzucenie pustych rzędów startowych
+def pobierz_lub_wczytaj_dane(wymus_pobranie=False):
+    """
+    Funkcja działa jako lokalny cache. Jeżeli baza nie istnieje, pobiera dane z API.
+    Jeżeli istnieje, wczytuje je lokalnie, oszczędzając czas i limity zapytań API.
+    """
+    if not os.path.exists(DB_PATH) or wymus_pobranie:
+        print("Pobieranie danych z API i zapis do bazy SQLite...")
+        # Pobranie danych i wybór kursów zamknięcia
+        df = yf.download(PORTFOLIO + [VIX_TICKER], start=DATA_OD, end=DATA_DO)['Close']
+        df.index.name = 'Date'
+        df = df.ffill().dropna() # Uzupełnienie luk, usunięcie początkowych braków
+        
+        # Zapis do bazy jako tabela szeroka (szybki odczyt dla pandas)
+        with sqlite3.connect(DB_PATH) as conn:
+            df.to_sql(DB_TABLE, conn, if_exists='replace', index=True)
+        return df
+    else:
+        print("Wczytywanie danych historycznych z bazy SQLite...")
+        with sqlite3.connect(DB_PATH) as conn:
+            # Wczytanie z automatycznym parsowaniem indeksu czasowego
+            df = pd.read_sql(f"SELECT * FROM {DB_TABLE}", conn, parse_dates=['Date'], index_col='Date')
+        return df
 
 # ==========================================
 # 3. SYMULACJA PORTFELI
@@ -28,7 +53,7 @@ def symuluj_strategie(df):
     vix = df[VIX_TICKER]
     waga = 1.0 / len(PORTFOLIO)
     
-    # -- 1. Buy & Hold (Obliczenie wektorowe) --
+    # -- 1. Buy & Hold (Obliczenie wektorowe - zero pętli) --
     bh_akcje = (KAPITAL * waga) / prices.iloc[0]
     bh_val = (prices * bh_akcje).sum(axis=1)
     
@@ -40,19 +65,19 @@ def symuluj_strategie(df):
     val_vix_hist = pd.Series(index=prices.index, dtype=float)
     
     ostatni_vix_rebal = prices.index[0]
+    # Zbiór dat dla rebalancingu rocznego (Ostatni dzień notowań w roku)
     dni_roczne = set(prices.groupby(prices.index.year).apply(lambda x: x.index[-1]))
 
-    # Jedna pętla dla obu strategii rebalancingu
+    # Jedna pętla iteracyjna dla strategii wymagających warunkowej zmiany liczby akcji
     for date, current_prices in prices.iterrows():
-        # Aktualna wycena
         val_roczny = (current_prices * akcje_roczny).sum()
         val_vix = (current_prices * akcje_vix).sum()
         
         val_roczny_hist[date] = val_roczny
         val_vix_hist[date] = val_vix
 
-        # Pomiń ostatni dzień badania dla rebalancingu
-        if date == prices.index[-1]: continue
+        if date == prices.index[-1]: 
+            continue # Pomijamy rebalansowanie w ostatnim dniu wyceny
 
         # -- 2. Rebalancing Roczny --
         if date in dni_roczne:
@@ -70,13 +95,15 @@ def symuluj_strategie(df):
     })
 
 # ==========================================
-# 4. WYNIKI I WIZUALIZACJA
+# 4. PUNKT WEJŚCIA I WIZUALIZACJA
 # ==========================================
 if __name__ == '__main__':
-    df_dane = pobierz_dane()
+    # Aby wymusić nadpisanie bazy nowymi danymi z API, ustaw wymus_pobranie=True
+    df_dane = pobierz_lub_wczytaj_dane(wymus_pobranie=False)
+    
     wyniki = symuluj_strategie(df_dane)
     
-    # Generowanie Tabeli
+    # Generowanie analitycznej tabeli podsumowującej
     podsumowanie = []
     for kolumna in wyniki.columns:
         wartosc = wyniki[kolumna].iloc[-1]
@@ -92,7 +119,7 @@ if __name__ == '__main__':
     print("="*55)
     print(pd.DataFrame(podsumowanie).to_string(index=False))
 
-    # Wykres
+    # Generowanie wykresu
     wyniki.plot(figsize=(12, 6), linewidth=1.5, color=['#2196F3', '#4CAF50', '#FF9800'])
     plt.title('Wartość portfela: B&H vs Rebalancing Roczny vs Rebalancing VIX', fontweight='bold')
     plt.ylabel('Kapitał [USD]')
