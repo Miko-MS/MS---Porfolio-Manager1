@@ -22,10 +22,10 @@ PORTFOLIO = {
 }
 
 VIX_TICKER = '^VIX'
-DATA_OD = '2012-05-18'
+DATA_OD = '2012-12-31'
 DATA_DO = '2025-12-31'
 KAPITAL = 10000.0
-PROG_VIX = 30.0 
+PROG_VIX = 50.0 
 COOLDOWN = 20
 DB_PATH = 'portfel_sektorowy.db'
 
@@ -33,11 +33,10 @@ DB_PATH = 'portfel_sektorowy.db'
 # 2. POBIERANIE I ZAPIS DANYCH
 # ==========================================
 def pobierz_i_zapisz_dane():
-    print("Pobieram dane z Yahoo Finance...")
     tickery_do_pobrania = list(PORTFOLIO.keys())
     tickery_do_pobrania.append(VIX_TICKER)
     df = yf.download(tickery_do_pobrania, start=DATA_OD, end=DATA_DO)['Close']
-    df = df.ffill().dropna() # Wypełniamy luki w danych
+    df = df.ffill().dropna() 
 
     conn = sqlite3.connect(DB_PATH)
     df.to_sql('ceny', conn, if_exists='replace', index=True)
@@ -46,7 +45,7 @@ def pobierz_i_zapisz_dane():
     return df
 
 # ==========================================
-# 3. SYMULACJA STRATEGII (Zrozumiale, krok po kroku)
+# 3. SYMULACJA STRATEGII 
 # ==========================================
 def symuluj_strategie(df):
     waga_spolki = 1.0 / len(PORTFOLIO)
@@ -80,7 +79,6 @@ def symuluj_strategie(df):
     for data, ceny_dzisiejsze in df.iterrows():
         daty.append(data)
         
-        #Obliczanie dzisiejszej wartości każdego portfela
         wartosc_bh = 0.0
         wartosc_roczny = 0.0
         wartosc_vix_portfel = 0.0
@@ -101,7 +99,7 @@ def symuluj_strategie(df):
             kwota_na_spolke = wartosc_roczny * waga_spolki
             for ticker in tickery_akcji:
                 akcje_roczny[ticker] = kwota_na_spolke / ceny_dzisiejsze[ticker]
-            poprzedni_rok = aktualny_rok # Aktualizujemy rok
+            poprzedni_rok = aktualny_rok
             
         # Rebalancing VIX 
         dzisiejszy_vix = vix[data]
@@ -111,7 +109,7 @@ def symuluj_strategie(df):
             kwota_na_spolke = wartosc_vix_portfel * waga_spolki
             for ticker in tickery_akcji:
                 akcje_vix[ticker] = kwota_na_spolke / ceny_dzisiejsze[ticker]
-            ostatnia_data_rebal_vix = data # Zapisujemy datę rebalansu
+            ostatnia_data_rebal_vix = data 
 
     # Wynik
     wyniki = pd.DataFrame({
