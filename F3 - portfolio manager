@@ -1,1 +1,101 @@
+def symuluj_strategie(df):
+    waga_spolki = 1.0 / len(PORTFOLIO)
+    kapital_na_spolke = KAPITAL * waga_spolki
+    tickery_akcji = list(PORTFOLIO.keys())
+    vix = df[VIX_TICKER]
+   
+    pierwszy_dzien = df.iloc[0]
+    akcje_bh = {}
+    akcje_roczny = {}
+    akcje_vix = {}
 
+    for ticker in tickery_akcji:
+        ilosc = kapital_na_spolke / pierwszy_dzien[ticker]
+        akcje_bh[ticker] = ilosc
+        akcje_roczny[ticker] = ilosc
+        akcje_vix[ticker] = ilosc
+
+    historia_bh = []
+    historia_roczny = []
+    historia_vix = []
+    daty = []
+
+    poprzedni_rok = df.index[0].year
+    ostatnia_data_rebal_vix = df.index[0]
+
+
+    # Pętla iterująca po każdym dniu
+    for data, ceny_dzisiejsze in df.iterrows():
+        daty.append(data)
+       
+        wartosc_bh = 0.0
+        wartosc_roczny = 0.0
+        wartosc_vix_portfel = 0.0
+       
+        for ticker in tickery_akcji:
+            cena = ceny_dzisiejsze[ticker]
+            wartosc_bh += cena * akcje_bh[ticker]
+            wartosc_roczny += cena * akcje_roczny[ticker]
+            wartosc_vix_portfel += cena * akcje_vix[ticker]
+           
+        historia_bh.append(wartosc_bh)
+        historia_roczny.append(wartosc_roczny)
+        historia_vix.append(wartosc_vix_portfel)
+
+        # Rebalancing Roczny 
+        aktualny_rok = data.year
+        if aktualny_rok != poprzedni_rok:
+            kwota_na_spolke = wartosc_roczny * waga_spolki
+            for ticker in tickery_akcji:
+                akcje_roczny[ticker] = kwota_na_spolke / ceny_dzisiejsze[ticker]
+            poprzedni_rok = aktualny_rok
+           
+        # Rebalancing VIX 
+        dzisiejszy_vix = vix[data]
+        dni_od_ostatniego_rebalansu = (data - ostatnia_data_rebal_vix).days
+       
+        if dzisiejszy_vix >= PROG_VIX and dni_od_ostatniego_rebalansu >= COOLDOWN:
+            kwota_na_spolke = wartosc_vix_portfel * waga_spolki
+            for ticker in tickery_akcji:
+                akcje_vix[ticker] = kwota_na_spolke / ceny_dzisiejsze[ticker]
+            ostatnia_data_rebal_vix = data
+
+
+    # Wyniki
+    wyniki = pd.DataFrame({
+        'B&H': historia_bh,
+        'Rebalancing Roczny': historia_roczny,
+        'Rebalancing VIX': historia_vix
+    }, index=daty)
+   
+    return wyniki
+
+
+
+
+
+
+if __name__ == '__main__':
+    dane = pobierz_i_zapisz_dane()
+    wyniki = symuluj_strategie(dane)
+
+    for strategia in wyniki.columns:
+        koncowy_kapital = wyniki[strategia].iloc[-1]
+        zysk_proc = ((koncowy_kapital - KAPITAL) / KAPITAL) * 100
+        # Wypisanie zaokrąglonych wartości
+        print(f"Strategia: {strategia}")
+        print(f"Kapitał końcowy: {round(koncowy_kapital, 2)} USD")
+        print(f"Stopa zwrotu: {round(zysk_proc, 2)} %\n")
+
+    # Wykres
+    plt.figure(figsize=(10, 6))
+    plt.plot(wyniki.index, wyniki['B&H'], label='B&H (Kup i Trzymaj)')
+    plt.plot(wyniki.index, wyniki['Rebalancing Roczny'], label='Rebalancing Roczny')
+    plt.plot(wyniki.index, wyniki['Rebalancing VIX'], label='Rebalancing VIX')
+   
+    plt.title('Porównanie strategii portfelowych')
+    plt.xlabel('Rok')
+    plt.ylabel('Wartość kapitału w USD')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
